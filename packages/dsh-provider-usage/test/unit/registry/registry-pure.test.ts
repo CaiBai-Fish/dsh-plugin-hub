@@ -7,8 +7,11 @@
  *   取证备份归集与轮转名单 / add 入参规整 / 穿越判定 / 相对路径围栏
  * - registry.ts：替换前收集旧条目 / 契约拒绝文案 / 改名撞名预检 / 旧启用关系快照
  *
- * 纪律：零 I/O（seam 与 add 路径全为纯判定）、零网络、零凭据。
+ * 纪律：零网络、零真实凭据（凭据链用例经临时 DSH_HOME 隔离，绝不读 ~/.dsh）。
  */
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   trimmedOrUndefined,
@@ -18,6 +21,7 @@ import {
   drillSettingsPath,
   apiKeyEnvOf,
   seamServicesOf,
+  resolveProviderConfig,
 } from "../../../src/server/registry/provider-config.ts";
 import {
   toAdapterRecord,
@@ -101,7 +105,14 @@ describe("provider-config seam 定位纯面", () => {
     },
     get: (name: string) =>
       name === "settings"
-        ? { get: () => ({ providers: { "pi-ai-r": { apiKeyEnv: "RJK_API_KEY" } } }) }
+        ? {
+            describe: () => [
+              {
+                ns: "llm-pi-ai",
+                value: { providers: { "pi-ai-r": { apiKeyEnv: "RJK_API_KEY" } } },
+              },
+            ],
+          }
         : { resolve: async () => ({ value: "sk" }) },
   };
 
@@ -128,10 +139,172 @@ describe("provider-config seam 定位纯面", () => {
     expect(apiKeyEnvOf(null)).toBeUndefined();
   });
 
-  it("seamServicesOf：两服务就位时给出取用面，缺一即 undefined", () => {
+  it("seamServicesOf：settings 读面为 describe()，两服务就位时给出取用面", () => {
     expect(typeof seamServicesOf(ctx)?.settingsGet).toBe("function");
+    // 旧 `settings.get(ns)` 形状不再被当作 seam（#1163 回归：静默吃旧接口）
     expect(seamServicesOf({ get: () => undefined })).toBeUndefined();
+    // 缺 credentials 服务同样不可用
+    expect(seamServicesOf({ describe: () => [] })).toBeUndefined();
     expect(seamServicesOf({})).toBeUndefined();
+  });
+
+  it("settingsGet：按 ns 取 describe 条目 value；无该 ns 即 undefined", () => {
+    const services = seamServicesOf(ctx);
+    expect(services?.settingsGet("llm-pi-ai")).toEqual({
+      providers: { "pi-ai-r": { apiKeyEnv: "RJK_API_KEY" } },
+    });
+    expect(services?.settingsGet("missing-ns")).toBeUndefined();
+  });
+});
+
+/**
+ * 在隔离 DSH_HOME + 干净环境变量下执行：V1 链不得命中真实 ~/.dsh 或宿主环境
+ * （#1167 评审 P1-2：环境里存在 DEEPSEEK_OFFICIAL_API_KEY 时，known-ref 用例会假红）。
+ */
+async function withIsolatedCredentials<T>(
+  fn: () => Promise<T>,
+  extraEnvKeys: readonly string[] = [],
+): Promise<T> {
+  const keys = ["DEEPSEEK_OFFICIAL_API_KEY", ...extraEnvKeys];
+  const prevHome = process.env.DSH_HOME;
+  const prevKeys = new Map(keys.map((k) => [k, process.env[k]]));
+  const dir = mkdtempSync(join(tmpdir(), "u-usage-provider-config-"));
+  process.env.DSH_HOME = dir;
+  for (const k of keys) delete process.env[k];
+  try {
+    return await fn();
+  } finally {
+    if (prevHome === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = prevHome;
+    for (const [k, v] of prevKeys) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+describe("provider-config 凭据解析：describe seam + 已知 ref 兜底", () => {
+  it("seam：describe 取 apiKeyEnv 后经 credentials.resolve 取值", async () => {
+    const ctx = {
+      llm: {
+        listConfigurableProviders: () => [
+          { provider: "r-direct", settingsNs: "llm-r", settingsPath: [] },
+        ],
+      },
+      get: (name: string) =>
+        name === "settings"
+          ? { describe: () => [{ ns: "llm-r", value: { apiKeyEnv: "R_REF" } }] }
+          : {
+              resolve: async (ref: string) => (ref === "R_REF" ? { value: "sk-seam" } : undefined),
+            },
+    };
+    const r = await resolveProviderConfig("r-direct", ctx);
+    expect(r.apiKey).toBe("sk-seam");
+  });
+
+  it("旧 settings.get 形状不再被当作 seam（#1163 回归）", async () => {
+    const ctx = {
+      llm: {
+        listConfigurableProviders: () => [
+          { provider: "r-old", settingsNs: "llm-old", settingsPath: [] },
+        ],
+      },
+      get: (name: string) =>
+        name === "settings"
+          ? { get: () => ({ apiKeyEnv: "OLD_REF" }) }
+          : { resolve: async () => ({ value: "sk-old" }) },
+    };
+    await withIsolatedCredentials(async () => {
+      const r = await resolveProviderConfig("r-old", ctx);
+      expect(r.apiKey).toBeUndefined();
+    }, ["R_OLD_API_KEY"]);
+  });
+
+  it("已知 provider ref 兜底：settings 缺席时仍从 credentials 取 DEEPSEEK_API_KEY", async () => {
+    const calls: string[] = [];
+    const ctx = {
+      get: (name: string) =>
+        name === "credentials"
+          ? {
+              resolve: async (ref: string) => {
+                calls.push(ref);
+                return ref === "DEEPSEEK_API_KEY" ? { value: "sk-known" } : undefined;
+              },
+            }
+          : undefined,
+    };
+    await withIsolatedCredentials(async () => {
+      const r = await resolveProviderConfig("deepseek-official", ctx);
+      expect(r.apiKey).toBe("sk-known");
+      expect(calls).toEqual(["DEEPSEEK_API_KEY"]);
+    });
+  });
+
+  it("非已知 provider 不触发已知 ref 兜底", async () => {
+    const calls: string[] = [];
+    const ctx = {
+      get: () => ({
+        resolve: async (ref: string) => {
+          calls.push(ref);
+          return { value: "x" };
+        },
+      }),
+    };
+    await withIsolatedCredentials(async () => {
+      const r = await resolveProviderConfig("mystery-provider", ctx);
+      expect(r.apiKey).toBeUndefined();
+      expect(calls).toEqual([]);
+    });
+  });
+
+  it("describe 以 redactSecrets:true 读取（最小权限）", async () => {
+    const seen: unknown[] = [];
+    const ctx = {
+      llm: {
+        listConfigurableProviders: () => [
+          { provider: "r-redact", settingsNs: "llm-redact", settingsPath: [] },
+        ],
+      },
+      get: (name: string) =>
+        name === "settings"
+          ? {
+              describe: (options: unknown) => {
+                seen.push(options);
+                return [{ ns: "llm-redact", value: { apiKeyEnv: "R_REF" } }];
+              },
+            }
+          : { resolve: async () => ({ value: "sk" }) },
+    };
+    await withIsolatedCredentials(async () => {
+      await resolveProviderConfig("r-redact", ctx);
+    });
+    expect(seen).toEqual([{ redactSecrets: true }]);
+  });
+
+  it("describe 抛错 → seam 回落而非 reject（仍能走 known-ref 兜底）", async () => {
+    const ctx = {
+      llm: {
+        listConfigurableProviders: () => [
+          { provider: "deepseek-official", settingsNs: "llm-deepseek", settingsPath: [] },
+        ],
+      },
+      get: (name: string) =>
+        name === "settings"
+          ? {
+              describe: () => {
+                throw new Error("describe-boom");
+              },
+            }
+          : {
+              resolve: async (ref: string) =>
+                ref === "DEEPSEEK_API_KEY" ? { value: "sk-known" } : undefined,
+            },
+    };
+    await withIsolatedCredentials(async () => {
+      const r = await resolveProviderConfig("deepseek-official", ctx);
+      expect(r.apiKey).toBe("sk-known");
+    });
   });
 });
 

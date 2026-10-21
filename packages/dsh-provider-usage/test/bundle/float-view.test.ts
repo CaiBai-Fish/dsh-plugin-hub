@@ -40,6 +40,7 @@ const {
   statsReason,
   pillDotLevel,
   pillTitle,
+  staleAgeText,
   errorMessage,
   isUnconfigured,
   panelBodyKind,
@@ -137,9 +138,14 @@ describe("float-view：pillDotLevel", () => {
     expect(pillDotLevel(stats({ status: "stale" }))).toBe("warn");
   });
 
-  it("fresh / cached → ok", () => {
+  it("fresh / cached → ok（成功帧）", () => {
     expect(pillDotLevel(stats({ status: "fresh" }))).toBe("ok");
     expect(pillDotLevel(stats({ status: "cached" }))).toBe("ok");
+  });
+
+  it("cached + error → warn（失败帧缓存期不得显示绿点）", () => {
+    expect(pillDotLevel(stats({ status: "cached", error: "no-api-key" }))).toBe("warn");
+    expect(pillDotLevel(stats({ status: "fresh", error: "no-api-key" }))).toBe("warn");
   });
 });
 
@@ -207,6 +213,64 @@ describe("float-view：pillTitle 四态 + 未知标注", () => {
     expect(pillTitle(stats({ configured: false }), "vendor-a", true)).toBe(
       `vendor-a · pillNotConfigured · providerUnknown`,
     );
+  });
+});
+
+describe("float-view：staleAgeText（#1163 取数失败带旧值）", () => {
+  it("stale + error + lastSuccessAt → 相对时间文案", () => {
+    expect(
+      staleAgeText(
+        stats({
+          status: "stale",
+          error: "no-api-key",
+          lastSuccessAt: Date.now() - 86_400_000 * 27,
+        }),
+      ),
+    ).toBe("pillLastSuccess[t=daysAgo[n=27]]");
+  });
+
+  it("失败帧在缓存期（status=cached）同样带最后更新，不随缓存抖动", () => {
+    expect(
+      staleAgeText(
+        stats({ status: "cached", error: "no-api-key", lastSuccessAt: Date.now() - 86_400_000 }),
+      ),
+    ).toBe("pillLastSuccess[t=daysAgo[n=1]]");
+  });
+
+  it("无 error / 无 lastSuccessAt / 非有限值 → 空串", () => {
+    expect(staleAgeText(null)).toBe("");
+    expect(staleAgeText(stats({ lastSuccessAt: Date.now() - 86_400_000 * 27 }))).toBe("");
+    expect(staleAgeText(stats({ status: "stale", lastSuccessAt: Date.now() - 86_400_000 }))).toBe(
+      "",
+    );
+    expect(staleAgeText(stats({ status: "stale", error: "x" }))).toBe("");
+    expect(staleAgeText(stats({ status: "stale", error: "x", lastSuccessAt: Number.NaN }))).toBe(
+      "",
+    );
+  });
+
+  it("lastSuccessAt 为 0 / 负数 / 未来值 → 空串（损坏历史不得渲染成 2 万天前）", () => {
+    expect(staleAgeText(stats({ error: "x", lastSuccessAt: 0 }))).toBe("");
+    expect(staleAgeText(stats({ error: "x", lastSuccessAt: -1 }))).toBe("");
+    expect(staleAgeText(stats({ error: "x", lastSuccessAt: Date.now() + 60_000 }))).toBe("");
+  });
+
+  it("pillTitle 失败态追加最后更新时间", () => {
+    expect(
+      pillTitle(
+        stats({
+          status: "stale",
+          error: "no-api-key",
+          lastSuccessAt: Date.now() - 86_400_000 * 27,
+        }),
+        "vendor-a",
+        false,
+      ),
+    ).toBe("pillFetchFail[msg=no-api-key] · pillLastSuccess[t=daysAgo[n=27]]");
+  });
+
+  it("pillTitle 失败态无 lastSuccessAt 时保持原样", () => {
+    expect(pillTitle(stats({ error: "boom" }), "vendor-a", false)).toBe("pillFetchFail[msg=boom]");
   });
 });
 

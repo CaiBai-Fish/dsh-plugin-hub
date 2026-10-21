@@ -1804,14 +1804,58 @@ describe("A2 opencode-go 空 data 防御回归", () => {
   });
 });
 
+// ================================================================ #1163 面板陈旧采样提示
+
+describe("#1163 面板陈旧采样提示：末次采样早于 24h 标注时间", () => {
+  const now = Date.UTC(2026, 9, 21, 12, 0, 0);
+  const sample = (time: number) => ({
+    time,
+    data: { isAvailable: true, balance: 36.79, toppedUp: 36.79, grantedBalance: 0 },
+  });
+  const oldAnchor = now - 27 * 86400000;
+  const oldPanel = deepSeekOfficialAdapter.formatPanel({
+    entries: [sample(oldAnchor), sample(oldAnchor + 300000)],
+    range: { start: 0, end: now },
+    truncated: false,
+    esc,
+  });
+  const freshPanel = deepSeekOfficialAdapter.formatPanel({
+    entries: [sample(now - 3600000), sample(now - 3000000)],
+    range: { start: 0, end: now },
+    truncated: false,
+    esc,
+  });
+  const zeroPanel = deepSeekOfficialAdapter.formatPanel({
+    entries: [sample(0)],
+    range: { start: 0, end: now },
+    truncated: false,
+    esc,
+  });
+
+  it("旧采样 → 副标题出现「最后采样」+ 具体时间", () => {
+    expect(oldPanel.includes("最后采样")).toBeTruthy();
+    expect(/最后采样 \d{2}-\d{2} \d{2}:\d{2}/.test(oldPanel)).toBeTruthy();
+  });
+
+  it("24h 内采样 → 不出现陈旧提示", () => {
+    expect(freshPanel.includes("最后采样")).toBe(false);
+  });
+
+  it("时刻 0（损坏分片）→ 不出现陈旧提示", () => {
+    expect(zeroPanel.includes("最后采样")).toBe(false);
+  });
+});
+
 // ================================================================ 管线集成：runV2Pipeline 失败分支 stale 帧
 
 describe("管线集成：runV2Pipeline 失败分支 stale 帧", () => {
   let result: V2PipelineResult;
   let resultWithHistory: V2PipelineResult;
   let resultBadHistory: V2PipelineResult;
+  let resultZeroTime: V2PipelineResult;
   let okResult: V2PipelineResult;
   let sanitized: string;
+  let lastOkTime: number;
 
   beforeAll(async () => {
     const netFail = (() => Promise.reject(new Error("ECONNREFUSED"))) as unknown as typeof fetch;
@@ -1830,6 +1874,7 @@ describe("管线集成：runV2Pipeline 失败分支 stale 帧", () => {
       time: Date.now() - 600000,
       data: { isAvailable: true, balance: 88.88, toppedUp: 88.88, grantedBalance: 0 },
     };
+    lastOkTime = lastOk.time;
     resultWithHistory = await runV2Pipeline({
       adapter: deepSeekOfficialAdapter,
       provider: DEEPSEEK_OFFICIAL_PROVIDER,
@@ -1838,6 +1883,22 @@ describe("管线集成：runV2Pipeline 失败分支 stale 帧", () => {
       timeoutMs: 2000,
       fetchImpl: netFail,
       history: { last: async () => lastOk },
+    });
+
+    // 损坏历史（time=0）：不把 0 当「最后成功时刻」透出（#1167 评审批次 P2）
+    resultZeroTime = await runV2Pipeline({
+      adapter: deepSeekOfficialAdapter,
+      provider: DEEPSEEK_OFFICIAL_PROVIDER,
+      config: { apiEndpoint: "http://127.0.0.1:9", apiKey: "sk-pipe" },
+      staticPath: "",
+      timeoutMs: 2000,
+      fetchImpl: netFail,
+      history: {
+        last: async () => ({
+          time: 0,
+          data: { isAvailable: true, balance: 88.88, toppedUp: 88.88, grantedBalance: 0 },
+        }),
+      },
     });
 
     // history 兜底读失败视同无历史：回退空 data 占位，绝不因兜底读失败放大错误
@@ -1910,6 +1971,16 @@ describe("管线集成：runV2Pipeline 失败分支 stale 帧", () => {
 
   it("胶囊渲染历史最后成功余额", () => {
     expect(resultWithHistory.capsuleHtml!.includes("¥88.88")).toBeTruthy();
+  });
+
+  it("带值降级带出最后成功时刻（#1163 客户端据此显示最后更新时间）", () => {
+    expect(resultWithHistory.lastSuccessAt).toBe(lastOkTime);
+  });
+
+  it("无历史 / 历史读失败 / time=0 时 lastSuccessAt 缺席", () => {
+    expect(result.lastSuccessAt).toBeUndefined();
+    expect(resultBadHistory.lastSuccessAt).toBeUndefined();
+    expect(resultZeroTime.lastSuccessAt).toBeUndefined();
   });
 
   it("不再跌无数据占位", () => {

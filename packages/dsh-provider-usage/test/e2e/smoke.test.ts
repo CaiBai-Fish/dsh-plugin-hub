@@ -153,6 +153,8 @@ interface HealthPayload {
   ok: boolean;
   adapters: Array<Record<string, unknown>>;
   errors: Array<{ key: string; kind: string; message: string; at: number }>;
+  /** #1163 取数失败观测面（provider → 最近一次失败）。 */
+  fetchErrors?: Array<{ provider: string; at: number; error: string }>;
   cacheSize?: number;
   [key: string]: unknown;
 }
@@ -887,6 +889,19 @@ describe("/health 响应", () => {
           kind: expect.stringMatching(/^(load|exec)$/),
           message: expect.any(String),
           at: expect.any(Number),
+        }),
+      );
+    }
+  });
+
+  it("fetchErrors 观测面存在（#1163 取数失败不再只藏在胶囊 tooltip）", () => {
+    expect(Array.isArray(payload.fetchErrors)).toBe(true);
+    for (const e of payload.fetchErrors ?? []) {
+      expect(e).toEqual(
+        expect.objectContaining({
+          provider: expect.any(String),
+          at: expect.any(Number),
+          error: expect.any(String),
         }),
       );
     }
@@ -1903,6 +1918,7 @@ describe("#198 deepseek-official 内置适配器集成 · 场景 1（纯 builtin
   let failPayloadReason: unknown;
   let failPayloadCapsuleHtml: string;
   let failPayloadError: unknown;
+  let failPayloadLastSuccessAt: unknown;
   let builtinHistDirAbsent: boolean;
   let e5Bodies: Record<string, string>;
 
@@ -1961,6 +1977,7 @@ describe("#198 deepseek-official 内置适配器集成 · 场景 1（纯 builtin
     failPayloadReason = failPayload.reason;
     failPayloadCapsuleHtml = failPayload.capsuleHtml;
     failPayloadError = failPayload.error;
+    failPayloadLastSuccessAt = failPayload.lastSuccessAt;
 
     // A3：错误帧绝不落盘历史——builtin 历史目录不应存在
     const builtinHistDir = join(
@@ -2015,6 +2032,10 @@ describe("#198 deepseek-official 内置适配器集成 · 场景 1（纯 builtin
     expect(failPayloadCapsuleHtml.includes("DeepSeek 余额 --")).toBeTruthy();
   });
 
+  it("A1: 无历史时 lastSuccessAt=null（不伪造最后成功时间）", () => {
+    expect(failPayloadLastSuccessAt).toBeNull();
+  });
+
   it("G8: stale 帧峰谷徽标常驻", () => {
     expect(failPayloadCapsuleHtml.includes("dou-peak")).toBeTruthy();
   });
@@ -2029,6 +2050,61 @@ describe("#198 deepseek-official 内置适配器集成 · 场景 1（纯 builtin
 
   it.each(["adapters.json 响应", "stats 响应"])("E5: 响应体不含密钥子串（%s）", (label) => {
     expect(e5Bodies[label].includes("sk-smoke-test")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------- #1163 失败帧接线
+//
+// 评审 P1-3：lastSuccessAt 的 HTTP 透传与 health.fetchErrors 的实际登记此前无断言
+// （改坏接线仍 3749 全绿）。historyDir 用 mkdtemp 隔离，避免污染其它 describe 的
+// DSH_HOME 历史断言（如场景 1 的 A3「错误帧不落盘」）。
+
+describe("#1163 失败帧接线：lastSuccessAt 透传 + health.fetchErrors 登记", () => {
+  let lastSuccessAt: unknown;
+  let fetchErrors: HealthPayload["fetchErrors"];
+  const seeded = Date.now() - 2 * 86400000;
+
+  beforeAll(async () => {
+    const histDir = mkdtempSync(join(tmpdir(), "dou-lastok-"));
+    const histSub = join(histDir, DEEPSEEK_OFFICIAL_PROVIDER, DEEPSEEK_OFFICIAL_ADAPTER_ID);
+    mkdirSync(histSub, { recursive: true });
+    writeFileSync(
+      join(histSub, `${dayKey(seeded)}.jsonl`),
+      JSON.stringify({
+        time: seeded,
+        data: { isAvailable: true, balance: 36.79, toppedUp: 36.79, grantedBalance: 0 },
+      }) + "\n",
+      "utf8",
+    );
+
+    const { ctx, routes } = makeFakeCtx();
+    await apply(ctx, {
+      ...ISOLATED_CONFIG,
+      provider: DEEPSEEK_OFFICIAL_PROVIDER,
+      historyDir: histDir,
+      warmupIntervalMs: 0,
+    });
+
+    const statsRoute = routes.find((r) => r.path === ROUTES.stats);
+    const stats = await callHandler<StatsPayload>(
+      statsRoute!,
+      fakeReq({ url: `${ROUTES.stats}?provider=${DEEPSEEK_OFFICIAL_PROVIDER}` }),
+    );
+    lastSuccessAt = stats.lastSuccessAt;
+
+    const healthRoute = routes.find((r) => r.path === ROUTES.health);
+    const health = await callHandler<HealthPayload>(healthRoute!, fakeReq({ url: ROUTES.health }));
+    fetchErrors = health.fetchErrors;
+  });
+
+  it("stale 失败帧透传 lastSuccessAt（= 最后成功采样时刻）", () => {
+    expect(lastSuccessAt).toBe(seeded);
+  });
+
+  it("health.fetchErrors 登记该 provider 的取数失败（成功才清除）", () => {
+    const hit = fetchErrors?.find((e) => e.provider === DEEPSEEK_OFFICIAL_PROVIDER);
+    expect(hit).toMatchObject({ provider: DEEPSEEK_OFFICIAL_PROVIDER, error: "network" });
+    expect(typeof hit?.at).toBe("number");
   });
 });
 
