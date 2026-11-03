@@ -6,7 +6,7 @@
 
 ## 支持的版本（Supported Versions）
 
-本分支将适配基线提升到 DeepSeek Harness `0.2.1-rc.3`。适配基线的权威版本事实源是
+本分支将适配基线提升到 DeepSeek Harness `0.2.1-rc.4`。适配基线的权威版本事实源是
 `pnpm-workspace.yaml` 的 catalog；各包 peerDependencies 是由维护流程生成的精确版本投影；
 catalog 之外的其他 DSH 版本不在兼容与安全修复范围内。
 
