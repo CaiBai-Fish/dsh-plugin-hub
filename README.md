@@ -30,14 +30,14 @@ DSH（DeepSeek Harness）Web GUI 插件集，npm 分发：一键装全家桶，�
 <a id="使用前须知"></a><a id="user-content-使用前须知"></a>
 ## 使用前须知
 
-### 版本适配（只适配 rc）
+### 版本适配（rc 兼容范围）
 
-本分支将适配基线提升到 DeepSeek Harness `0.2.1-rc.4`。
+本分支将适配基线提升到 DeepSeek Harness `0.2.1-rc.5`，并把 peer 投影改为兼容范围。
 
-- `pnpm-workspace.yaml` 的官方类型层 catalog 是权威版本事实源；各包 peerDependencies 是维护流程生成的精确版本投影，锁定 `dsh 0.2.1-rc.4`（`@deepseek-ai/cordis` 为 `4.0.5`）；其他 DSH 版本不在本轮支持范围
-- 安装/更新时若 DSH 版本不匹配，npm/pnpm 会给出 peer 提示——先发布/安装与目标 DSH 精确匹配的插件版本，再切换 DSH 本体；不要用 `allow-version` 绕过不兼容
+- `pnpm-workspace.yaml` 的官方类型层 catalog 是权威版本事实源，保持精确版本（构建所用类型层不随时间漂移）；各包 `peerDependencies` 由维护流程投影为 `>=<catalog 版本> <下一个 minor>` 的兼容范围（`@deepseek-ai/cordis` 保持精确 `4.0.5`）。因此同一 minor 线内的宿主 rc/alpha 升级无需重新发布；下一个 minor 到来时仍会失配，需要重新适配与验证
+- 安装/更新时若 DSH 版本不匹配，npm/pnpm 会给出 peer 提示——先发布/安装与目标 DSH 匹配的插件版本，再切换 DSH 本体；不要用 `allow-version` 绕过不兼容
 - 每版的具体适配基线、破坏性变更与升级指南见 [Release Notes](docs/release-notes/)
-- 上游 `main` 的适配基线为 `0.2.1-rc.2`；本分支不对其他 rc、alpha、旧 runtime 或其他版本作兼容承诺
+- 上游 `main` 的适配基线为 `0.2.1-rc.2`；本分支不对其他 major/minor 线与旧 runtime 作兼容承诺
 
 ### 独立安装与全家桶：二选一
 

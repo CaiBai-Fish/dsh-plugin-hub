@@ -72,6 +72,26 @@ export function isCanonicalExactVersion(value: unknown): value is string {
   return typeof value === "string" && EXACT_SEMVER.test(value);
 }
 
+/**
+ * catalog 的精确版本 → 写进 peerDependencies 的兼容范围。
+ *
+ * DSH 的兼容层判定式是 `semver.satisfies(runtimeVersion, peerSpec, { includePrerelease: true })`；
+ * 若 peer 写精确版本，宿主每上一个 rc 补丁（例如 0.2.1-rc.4 → 0.2.1-rc.5）就会失配并被拒绝加载，
+ * 每次都要重新发布。
+ *
+ * 因此 `@deepseek-ai/dsh-*` 的 peer 投影成「下界 = catalog 锁定版本，上界 = 下一个 minor」的范围：
+ * 一次构建即可覆盖同一 minor 线内后续的 rc/alpha 升级，而下一个 minor 到来时仍会失配，
+ * 从而强制重新适配与验证。catalog 本身保持精确版本，构建所用类型层不随时间漂移。
+ *
+ * 其余官方包（如 `@deepseek-ai/cordis`）保持精确版本：它们不参与 DSH 的 dsh-* 兼容判定。
+ */
+export function peerSpecOf(name: string, catalogVersion: string): string {
+  if (!name.startsWith("@deepseek-ai/dsh-")) return catalogVersion;
+  const [major, minor] = catalogVersion.split("-")[0].split(".");
+  const nextMinor = Number(minor) + 1;
+  return `>=${catalogVersion} <${major}.${nextMinor}.0`;
+}
+
 /** 剥掉 YAML 标量两侧的成对引号（单/双均可）；未加引号时原样返回。 */
 function unquote(scalar: string): string {
   const quote = scalar[0];
@@ -230,9 +250,10 @@ function checkPackagePeerContract(
       problems.push(`${dir}: catalog["${name}"] 不是 canonical exact SemVer`);
     }
     const spec = peers?.[name];
-    if (spec !== version) {
+    const projected = version === undefined ? undefined : peerSpecOf(name, version);
+    if (projected !== undefined && spec !== projected) {
       problems.push(
-        `${dir}: peerDependencies["${name}"] = ${JSON.stringify(spec)} —— 必须与 catalog 精确版本 ${JSON.stringify(version)} 一致`,
+        `${dir}: peerDependencies["${name}"] = ${JSON.stringify(spec)} —— 必须与 catalog 投影 ${JSON.stringify(projected)} 一致`,
       );
     }
   }
@@ -646,11 +667,12 @@ export function plannedPeerChanges(
   const changes: CatalogPeerUpdate["changes"] = [];
   const problems: string[] = [];
   for (const name of expected) {
-    const to = catalog.get(name);
-    if (to === undefined || !isCanonicalExactVersion(to)) {
+    const version = catalog.get(name);
+    if (version === undefined || !isCanonicalExactVersion(version)) {
       problems.push(`${dir}: peer "${name}" 缺少 canonical exact catalog 版本`);
       continue;
     }
+    const to = peerSpecOf(name, version);
     const from = peers?.[name];
     if (from !== to) changes.push({ name, from, to });
   }
@@ -956,8 +978,9 @@ export function sideValueProblems(
   name: string,
   version: string,
 ): string[] {
-  if (peers?.[name] === version) return [];
-  return [`${label}: ${side} peerDependencies["${name}"] 不是 catalog exact version`];
+  const projected = peerSpecOf(name, version);
+  if (peers?.[name] === projected) return [];
+  return [`${label}: ${side} peerDependencies["${name}"] 不是 catalog 投影 ${projected}`];
 }
 
 /** catalog 键必须在供应链豁免清单中登记同一精确版本。 */

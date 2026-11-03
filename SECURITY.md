@@ -6,9 +6,10 @@
 
 ## 支持的版本（Supported Versions）
 
-本分支将适配基线提升到 DeepSeek Harness `0.2.1-rc.4`。适配基线的权威版本事实源是
-`pnpm-workspace.yaml` 的 catalog；各包 peerDependencies 是由维护流程生成的精确版本投影；
-catalog 之外的其他 DSH 版本不在兼容与安全修复范围内。
+本分支将适配基线提升到 DeepSeek Harness `0.2.1-rc.5`。适配基线的权威版本事实源是
+`pnpm-workspace.yaml` 的 catalog（保持精确版本）；各包 peerDependencies 由维护流程投影为
+`>=<catalog 版本> <下一个 minor>` 的兼容范围，因此同一 minor 线内的宿主 rc/alpha 升级仍在
+兼容范围内；下一个 minor 线与旧 runtime 不在兼容与安全修复范围内。
 
 - 当前基线：即上条所述 catalog 锁版（版本号不在本文件复述，以免与事实源漂移）。
 - 受理：在 catalog 锁定的当前基线上可复现的安全问题。
