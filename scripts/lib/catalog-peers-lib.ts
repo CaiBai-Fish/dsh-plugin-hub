@@ -89,7 +89,10 @@ export function peerSpecOf(name: string, catalogVersion: string): string {
   if (!name.startsWith("@deepseek-ai/dsh-")) return catalogVersion;
   const [major, minor] = catalogVersion.split("-")[0].split(".");
   const nextMinor = Number(minor) + 1;
-  return `>=${catalogVersion} <${major}.${nextMinor}.0`;
+  // 上界写 `<X.Y.0-0` 而不是 `<X.Y.0`：后者会把下一个 minor 的预发布（如 0.3.0-rc.1）也放行，
+  // 因为 semver 中预发布版本小于其正式版；`-0` 是语义最小的预发布标识，可排除整条预发布线，
+  // 从而保证跨 minor 时一定失配、强制重新适配。
+  return `>=${catalogVersion} <${major}.${nextMinor}.0-0`;
 }
 
 /** 剥掉 YAML 标量两侧的成对引号（单/双均可）；未加引号时原样返回。 */
